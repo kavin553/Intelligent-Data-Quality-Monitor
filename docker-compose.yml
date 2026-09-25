@@ -1,0 +1,165 @@
+version: '3.8'
+
+# ────────────────────────────────────────────────────────────────
+# DataShield Docker Compose
+#
+# Profiles:
+#   default      — postgres + api only (lightweight dev)
+#   streaming    — adds Kafka, Zookeeper, Schema Registry
+#   observability — adds Jaeger for distributed tracing
+#   full         — everything
+#
+# Usage:
+#   docker compose up                          # core only
+#   docker compose --profile streaming up      # + Kafka
+#   docker compose --profile observability up  # + Jaeger
+#   docker compose --profile full up           # all
+# ────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Core ────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: datashield_db
+    environment:
+      POSTGRES_USER: datashield
+      POSTGRES_PASSWORD: datashield_password
+      POSTGRES_DB: datashield
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datashield"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: datashield_api
+    environment:
+      DATABASE_URL: postgresql://datashield:datashield_password@postgres:5432/datashield
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DEPLOYMENT_ENVIRONMENT: development
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+    command: python3 src/api/main.py
+
+  # ── Streaming (profile: streaming) ──────────────────────────
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: datashield_zookeeper
+    profiles: ["streaming", "full"]
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: datashield_kafka
+    profiles: ["streaming", "full"]
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:29092"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    container_name: datashield_schema_registry
+    profiles: ["streaming", "full"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: datashield_kafka_ui
+    profiles: ["streaming", "full"]
+    depends_on:
+      - kafka
+      - schema-registry
+    ports:
+      - "8085:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: datashield
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+
+  # ── Observability (profile: observability) ──────────────────
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: datashield_jaeger
+    profiles: ["observability", "full"]
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+      - "6831:6831/udp"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: datashield_prometheus
+    profiles: ["observability", "full"]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: datashield_grafana
+    profiles: ["observability", "full"]
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: datashield
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  postgres_data:
+  grafana_data:

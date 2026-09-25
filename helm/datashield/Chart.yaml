@@ -1,0 +1,22 @@
+apiVersion: v2
+name: datashield
+description: Real-time data observability platform — detects failures 8h faster, calculates blast radius in <5ms
+type: application
+version: 0.1.0
+appVersion: "0.3.0"
+keywords:
+  - data-observability
+  - anomaly-detection
+  - data-lineage
+  - data-quality
+home: https://github.com/yourusername/datashield
+sources:
+  - https://github.com/yourusername/datashield
+maintainers:
+  - name: DataShield Team
+    email: team@datashield.io
+dependencies:
+  - name: postgresql
+    version: "13.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled

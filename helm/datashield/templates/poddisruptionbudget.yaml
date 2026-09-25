@@ -1,0 +1,14 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "datashield.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "datashield.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "datashield.selectorLabels" . | nindent 6 }}
+{{- end }}
